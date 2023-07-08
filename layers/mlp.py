@@ -15,7 +15,7 @@ class mlp(nn.Module):
         out_features = out_features or in_features
         hidden_features = hidden_features or in_features
         self.lin1 = nn.Linear(in_features, hidden_features, bias=bias)
-        self.act = act
+        self.act = act()
         self.lin2 = nn.Linear(hidden_features, out_features, bias=bias)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
