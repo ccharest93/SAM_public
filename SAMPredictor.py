@@ -7,6 +7,7 @@ from SAM import SAM
 from typing import Optional, Tuple
 
 from SAM_Transforms import ResizeLongestSide
+from utils.model import GPUManager
 
 
 class SamPredictor:
@@ -49,9 +50,9 @@ class SamPredictor:
         input_image_torch = input_image_torch.permute(2, 0, 1).contiguous()[None, :, :, :]
         input_image = self.model.preprocess(input_image_torch)
 
-        #GPU context switch to set features
-        self.features = self.model.image_encoder(input_image)
-
+        with GPUManager(tensors={"input_image":input_image, "model.image_encoder":self.model.image_encoder}, device=torch.device('cuda'),task="Embedding image",verbose=True) as tensors:
+          self.features = tensors['model.image_encoder'](tensors['input_image']).to(torch.device('cpu'))
+          self.model.image_encoder = tensors['model.image_encoder'].to(torch.device('cpu'))
         # Set various attributes
         self.original_size = image.shape[:2]
         self.input_size = tuple(input_image_torch.shape[-2:])
@@ -123,21 +124,29 @@ class SamPredictor:
             mask_input = torch.as_tensor(mask_input[None, :, :, :], dtype=torch.float)
 
 
-        #GPU context switch to set embeddings
-        sparse_embeddings, dense_embeddings = self.model.prompt_encoder(
-            points=points,
-            boxes=box,
-            masks=mask_input,
-        )
-
-        #GPU context switch to decode masks and upscale them
-        low_res_masks, iou_predictions = self.model.mask_decoder(
-            image_embeddings=self.features,
-            image_pe=self.model.prompt_encoder.get_dense_pe(),
-            sparse_prompt_embeddings=sparse_embeddings,
-            dense_prompt_embeddings=dense_embeddings,
-            multimask_output=multimask_output,
-        )
+        with GPUManager(tensors={"model.prompt_encoder":self.model.prompt_encoder, "points":points, "box":box, "mask_input":mask_input}, device=torch.device('cuda'),task="Embedding prompt",verbose=True) as tensors:
+          #Prompt encoder
+          tensors['sparse_embeddings'], tensors['dense_embeddings'] = tensors['model.prompt_encoder'](
+            points=tensors['points'],
+            boxes=tensors['box'],
+            masks=tensors['mask_input'],
+          )
+          del tensors['points'], tensors['box'], tensors['mask_input']
+          tensors['model.mask_decoder'] = self.model.mask_decoder.to(torch.device('cuda'))
+          tensors['features'] = self.features.to(torch.device('cuda'))
+          #Mask decoder
+          tensors['low_res_masks'], tensors['iou_predictions'] = tensors['model.mask_decoder'](
+              image_embeddings=tensors['features'],
+              image_pe=self.model.prompt_encoder.get_dense_pe(),
+              sparse_prompt_embeddings= tensors['sparse_embeddings'],
+              dense_prompt_embeddings= tensors['dense_embeddings'],
+              multimask_output=multimask_output,
+          )
+          self.model.mask_decoder = tensors['model.mask_decoder'].to(torch.device('cpu'))
+          self.model.prompt_encoder = tensors['model.prompt_encoder'].to(torch.device('cpu'))
+          low_res_masks = tensors['low_res_masks'].to(torch.device('cpu'))
+          iou_predictions = tensors['iou_predictions'].to(torch.device('cpu'))
+        
         masks = self.model.postprocess_masks(low_res_masks, self.input_size, self.original_size)
 
         #threshold masks
