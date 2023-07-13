@@ -11,7 +11,7 @@ from torchvision.ops.boxes import batched_nms, box_area  # type: ignore
 from typing import Any, Dict, List, Optional, Tuple
 
 from SAM import SAM
-from ..SAMPredictor import SamPredictor
+from SAMPredictor import SamPredictor
 from utils.amg import (
     MaskData,
     area_from_rle,
@@ -274,9 +274,9 @@ class SamAutomaticMaskGenerator:
 
         # Run model on this batch
         transformed_points = self.predictor.transform.apply_coords(points, im_size)
-        in_points = torch.as_tensor(transformed_points, device=self.predictor.device)
-        in_labels = torch.ones(in_points.shape[0], dtype=torch.int, device=in_points.device)
-        masks, iou_preds, _ = self.predictor.predict_torch(
+        in_points = torch.as_tensor(transformed_points, device=torch.device('cpu'))
+        in_labels = torch.ones(in_points.shape[0], dtype=torch.int, device=torch.device('cpu'))
+        masks, iou_preds, _ = self.predictor.predict(
             in_points[:, None, :],
             in_labels[:, None],
             multimask_output=True,

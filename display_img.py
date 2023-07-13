@@ -32,7 +32,6 @@ def process(np_img):
     # point_labels=input_label,
     # multimask_output=True,
     # )
-    return np_img
 if __name__ == "__main__":
     #GLOBAL VARIABLES
     model = SAM("vit_l")
@@ -50,7 +49,7 @@ if __name__ == "__main__":
                 gallery = gr.Gallery()
         #GRADIO EVENTS
         pil_img.select(fn=img_clicked, inputs=[pil_img], outputs=[gallery])
-        pil_img.upload(fn=process, inputs=[pil_img], outputs=[pil_img])
+        pil_img.upload(fn=process, inputs=[pil_img])
     block.launch()
 
 

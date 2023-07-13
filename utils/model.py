@@ -17,7 +17,7 @@ def to_device(obj, device):
         return obj
 
 class GPUManager():
-    def __init__(self, tensors, device, task, verbose=True):
+    def __init__(self, tensors,task, device=torch.device('cuda'), verbose=False):
         self.tensors = tensors
         self.device = device
         self.task = task

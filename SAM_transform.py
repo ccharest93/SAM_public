@@ -23,12 +23,13 @@ class ResizeLongestSide:
     def __init__(self, target_length: int) -> None:
         self.target_length = target_length
 
-    def apply_image(self, image: np.ndarray) -> np.ndarray:
+    def apply_image(self, image: np.ndarray) -> torch.Tensor:
         """
         Expects a numpy array with shape HxWxC in uint8 format.
         """
         target_size = self.get_preprocess_shape(image.shape[0], image.shape[1], self.target_length)
-        return np.array(resize(to_pil_image(image), target_size))
+        image = np.array(resize(to_pil_image(image), target_size))
+        return torch.as_tensor(image).permute(2, 0, 1).contiguous()[None, :, :, :]
 
     def apply_coords(self, coords: np.ndarray, original_size: Tuple[int, ...]) -> np.ndarray:
         """

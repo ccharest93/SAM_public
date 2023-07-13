@@ -45,18 +45,21 @@ class SamPredictor:
         self.reset_image()
 
         # Transform the image to the form expected by the model
-        input_image = self.transform.apply_image(image)
-        input_image_torch = torch.as_tensor(input_image)
+        self.original_size = image.shape[:2]
+        prep_image = self.transform.apply_image(image)
+        input_image_torch = torch.as_tensor(prep_image)
         input_image_torch = input_image_torch.permute(2, 0, 1).contiguous()[None, :, :, :]
+
+        self.input_size = tuple(input_image_torch.shape[-2:])
         input_image = self.model.preprocess(input_image_torch)
+
 
         with GPUManager(tensors={"input_image":input_image, "model.image_encoder":self.model.image_encoder}, device=torch.device('cuda'),task="Embedding image",verbose=True) as tensors:
           self.features = tensors['model.image_encoder'](tensors['input_image']).to(torch.device('cpu'))
           self.model.image_encoder = tensors['model.image_encoder'].to(torch.device('cpu'))
         # Set various attributes
-        self.original_size = image.shape[:2]
-        self.input_size = tuple(input_image_torch.shape[-2:])
         self.is_image_set = True
+        return prep_image
 
     @torch.no_grad()
     def predict(
@@ -104,7 +107,6 @@ class SamPredictor:
             raise RuntimeError("An image must be set with .set_image(...) before mask prediction.")
 
         # Transform input prompts
-        point_coords, point_labels, box, mask_input = None, None, None, None
         if point_coords is not None:
             assert (
                 point_labels is not None
