@@ -33,17 +33,18 @@ CHECKPOINTS = {"vit_h": "https://dl.fbaipublicfiles.com/segment_anything/sam_vit
 import torch
 from torch import nn
 import os
+import numpy as np
 from ImageEncoderVIT import ImageEncoderViT
 from PromptEncoder import PromptEncoder
 from MaskDecoder import MaskDecoder
 from layers.transformer import TwoWayTransformer
+from SAM_transform import ResizeLongestSide
+from typing import Optional, Tuple
+from utils.model import GPUManager
 
 from typing import Tuple, List, Dict, Any
-class SAM(nn.Module):
+class SAM_predict(nn.Module):
     mask_threshold: float = 0.0
-    pixel_mean= torch.Tensor([123.675, 116.28, 103.53]).view(-1, 1, 1)
-    pixel_std= torch.Tensor([58.395, 57.12, 57.375]).view(-1, 1, 1)
-    #device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     def __init__(self, version: str):
         super().__init__()
@@ -78,8 +79,13 @@ class SAM(nn.Module):
             iou_head_depth=3,
             iou_head_hidden_dim=256,
         )
+        
+        self.register_buffer("pixel_mean", torch.Tensor([123.675, 116.28, 103.53]).view(-1, 1, 1), False)
+        self.register_buffer("pixel_std", torch.Tensor([58.395, 57.12, 57.375]).view(-1, 1, 1), False)
         self.load_state_dict(self.load_weights(), strict=True)
         self.eval()
+        
+        self.transform =ResizeLongestSide(self.image_encoder.img_size)
 
     def load_weights(self, output_dir = "./pretrain_pth"):
         if not os.path.exists(output_dir):
@@ -92,6 +98,98 @@ class SAM(nn.Module):
             state_dict = torch.load(os.path.join(output_dir, f"{self.version}.pth"), map_location=torch.device('cpu'))
         return state_dict
     
+    @torch.no_grad()
+    def encode_image(
+        self,
+        image: np.ndarray,
+    ) -> None:
+        """
+        Arguments:
+          image (np.ndarray): The image for calculating masks. Expects an
+            image in HWC uint8 format, with pixel values in [0, 255].
+        """
+
+        # Resize
+        image, x = self.transform.apply_image(image)
+        # Normalize
+        x = (x - self.pixel_mean) / self.pixel_std
+        # Pad
+        h, w = x.shape[-2:]
+        padh = self.image_encoder.img_size - h
+        padw = self.image_encoder.img_size - w
+        x = nn.functional.pad(x, (0, padw, 0, padh))
+        # Encode
+        with GPUManager(task="encode_image", device=torch.device('cuda'), verbose=True, tensors={
+        "image_encoder":self.image_encoder, 
+        "x": x })  as tensors:
+            tensors['out'] = tensors['image_encoder'](tensors['x'])
+            self.image_encoder = tensors['image_encoder'].to(torch.device('cpu'))
+            return image, tensors['out'].to(torch.device('cpu'))
+    
+    @torch.no_grad()
+    def encode_prompt(self,
+        original_size,
+        point_coords: Optional[np.ndarray] = None,
+        point_labels: Optional[np.ndarray] = None,
+        box: Optional[np.ndarray] = None,
+        mask_input: Optional[np.ndarray] = None,
+        ):
+        if point_coords is not None:
+            assert (
+                point_labels is not None
+            ), "point_labels must be supplied if point_coords is supplied."
+            point_coords = self.transform.apply_coords(point_coords, original_size)
+            point_coords = torch.as_tensor(point_coords[None, :, :], dtype=torch.float)
+            point_labels = torch.as_tensor(point_labels[None, :], dtype=torch.int)
+            points = (point_coords, point_labels)
+        else:
+            points = None
+        if box is not None:
+            box = self.transform.apply_boxes(box, original_size)
+            box = torch.as_tensor(box[None, :], dtype=torch.float)
+        if mask_input is not None:
+            mask_input = torch.as_tensor(mask_input[None, :, :, :], dtype=torch.float)
+        
+        with GPUManager(task="encode_prompt", device=torch.device('cuda'), verbose=True ,tensors={
+        "prompt_encoder":self.prompt_encoder, 
+        "points":points, 
+        "box":box, 
+        "mask_input":mask_input }) as tensors:
+            tensors['sparse_embeddings'], tensors['dense_embeddings'] = tensors['prompt_encoder'](
+                points=tensors['points'],
+                boxes=tensors['box'],
+                masks=tensors['mask_input'],
+                )
+            self.prompt_encoder = tensors['prompt_encoder'].to(torch.device('cpu'))
+            return  tensors['dense_embeddings'].to(torch.device('cpu')), tensors['sparse_embeddings'].to(torch.device('cpu'))
+        
+    @torch.no_grad()
+    def decode_masks(
+        self,       
+        image_embeddings,
+        dense_prompt_embeddings,
+        sparse_prompt_embeddings,
+        multimask_output,):
+        with GPUManager(task="decode_masks", device=torch.device('cuda'), verbose=True ,tensors={
+        "mask_decoder":self.mask_decoder,
+        "image_embeddings":image_embeddings,
+        "dense_prompt_embeddings":dense_prompt_embeddings,
+        "sparse_prompt_embeddings":sparse_prompt_embeddings,
+        "dense_pe":self.prompt_encoder.get_dense_pe() }) as tensors:
+            tensors['low_res_masks'], tensors['iou_predictions'] = tensors['mask_decoder'](
+                image_embeddings= tensors['image_embeddings'],
+                image_pe= tensors['dense_pe'],
+                dense_prompt_embeddings= tensors['dense_prompt_embeddings'],
+                sparse_prompt_embeddings= tensors['sparse_prompt_embeddings'],
+                multimask_output= multimask_output,
+            )
+            self.mask_decoder = tensors['mask_decoder'].to(torch.device('cpu'))
+            low_res_masks = tensors['low_res_masks'].to(torch.device('cpu'))
+            iou_predictions = tensors['iou_predictions'].to(torch.device('cpu'))
+
+        return low_res_masks, iou_predictions
+
+
     @torch.no_grad()
     def forward(
         self,
@@ -166,17 +264,6 @@ class SAM(nn.Module):
         masks = nn.functional.interpolate(masks, original_size, mode="bilinear", align_corners=False)
         return masks
 
-    def preprocess(self, x: torch.Tensor) -> torch.Tensor:
-        """Normalize pixel values and pad to a square input."""
-        # Normalize colors
-        x = (x - self.pixel_mean) / self.pixel_std
-
-        # Pad
-        h, w = x.shape[-2:]
-        padh = self.image_encoder.img_size - h
-        padw = self.image_encoder.img_size - w
-        x = nn.functional.pad(x, (0, padw, 0, padh))
-        return x
     
 if __name__ == "__main__":
     model = SAM("vit_l")

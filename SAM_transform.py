@@ -29,7 +29,7 @@ class ResizeLongestSide:
         """
         target_size = self.get_preprocess_shape(image.shape[0], image.shape[1], self.target_length)
         image = np.array(resize(to_pil_image(image), target_size))
-        return torch.as_tensor(image).permute(2, 0, 1).contiguous()[None, :, :, :]
+        return image, torch.as_tensor(image).permute(2, 0, 1).contiguous()[None, :, :, :]
 
     def apply_coords(self, coords: np.ndarray, original_size: Tuple[int, ...]) -> np.ndarray:
         """
