@@ -1,5 +1,5 @@
 from SAMPredictor import SamPredictor
-from SAM import SAM
+from SAM import SAM_predict
 import gradio as gr
 from PIL import Image
 import numpy as np
@@ -12,9 +12,12 @@ def show_mask(mask, random_color=False):
     return mask.reshape(h, w, 1) * color.reshape(1, 1, -1)
 
 def img_clicked(evt: gr.SelectData, pil_img):
+    global features
+    if features is None:
+        return [pil_img]
     input_point = np.array([evt.index])
     input_label = np.array([1])
-    masks, scores, logits = predictor.predict(
+    masks, scores, logits = predictor.predict(features,
     point_coords=input_point,
     point_labels=input_label,
     multimask_output=True,
@@ -24,18 +27,13 @@ def img_clicked(evt: gr.SelectData, pil_img):
 
 
 def process(np_img):
-    prep_img = predictor.set_image(np_img)
-    # input_point = np.array([[500, 375]])
-    # input_label = np.array([1])
-    # masks, scores, logits = predictor.predict(
-    # point_coords=input_point,
-    # point_labels=input_label,
-    # multimask_output=True,
-    # )
+    global features
+    image, features = predictor.set_image(np_img)
 if __name__ == "__main__":
     #GLOBAL VARIABLES
-    model = SAM("vit_l")
+    model = SAM_predict("vit_l")
     predictor = SamPredictor(model)
+    features = None
     # # #GRADIO ----------------------------------
     block = gr.Blocks().queue()
     with block:

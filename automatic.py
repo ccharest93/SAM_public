@@ -160,7 +160,31 @@ class SamAutomaticMaskGenerator:
         """
 
         # Generate masks
-        mask_data = self._generate_masks(image)
+        self.uncropped_size = image.shape[:2]
+        crop_boxes, layer_idxs = generate_crop_boxes(
+            self.uncropped_size, self.crop_n_layers, self.crop_overlap_ratio
+        ) #returns a list of boxes with their level
+
+        # Iterate over image crops
+        data = MaskData()
+        for crop_box, layer_idx in zip(crop_boxes, layer_idxs):
+            crop_data = self._process_crop(image, crop_box, layer_idx)
+            data.cat(crop_data)
+
+        # Remove duplicate masks between crops
+        if len(crop_boxes) > 1:
+            # Prefer masks from smaller crops
+            scores = 1 / box_area(data["crop_boxes"])
+            scores = scores.to(data["boxes"].device)
+            keep_by_nms = batched_nms(
+                data["boxes"].float(),
+                scores,
+                torch.zeros_like(data["boxes"][:, 0]),  # categories
+                iou_threshold=self.crop_nms_thresh,
+            )
+            data.filter(keep_by_nms)
+
+        mask_data = data.to_numpy()
 
         # Filter small disconnected regions and holes in masks
         if self.min_mask_region_area > 0:
@@ -194,55 +218,27 @@ class SamAutomaticMaskGenerator:
 
         return curr_anns
 
-    def _generate_masks(self, image: np.ndarray) -> MaskData:
-        orig_size = image.shape[:2]
-        crop_boxes, layer_idxs = generate_crop_boxes(
-            orig_size, self.crop_n_layers, self.crop_overlap_ratio
-        )
-
-        # Iterate over image crops
-        data = MaskData()
-        for crop_box, layer_idx in zip(crop_boxes, layer_idxs):
-            crop_data = self._process_crop(image, crop_box, layer_idx, orig_size)
-            data.cat(crop_data)
-
-        # Remove duplicate masks between crops
-        if len(crop_boxes) > 1:
-            # Prefer masks from smaller crops
-            scores = 1 / box_area(data["crop_boxes"])
-            scores = scores.to(data["boxes"].device)
-            keep_by_nms = batched_nms(
-                data["boxes"].float(),
-                scores,
-                torch.zeros_like(data["boxes"][:, 0]),  # categories
-                iou_threshold=self.crop_nms_thresh,
-            )
-            data.filter(keep_by_nms)
-
-        data.to_numpy()
-        return data
-
+    #given a crop process for mask return a mask data
     def _process_crop(
         self,
         image: np.ndarray,
         crop_box: List[int],
         crop_layer_idx: int,
-        orig_size: Tuple[int, ...],
     ) -> MaskData:
         # Crop the image and calculate embeddings
         x0, y0, x1, y1 = crop_box
         cropped_im = image[y0:y1, x0:x1, :]
         cropped_im_size = cropped_im.shape[:2]
-        self.predictor.set_image(cropped_im)
+        image, out = self.predictor.set_image(cropped_im)
 
         # Get points for this crop
         points_scale = np.array(cropped_im_size)[None, ::-1]
         points_for_image = self.point_grids[crop_layer_idx] * points_scale
 
-        # Generate masks for this crop in batches
+        # Generate masks for this crop in batches (subsets of prompting points)
         data = MaskData()
         for (points,) in batch_iterator(self.points_per_batch, points_for_image):
-            batch_data = self._process_batch(points, cropped_im_size, crop_box, orig_size)
+            batch_data = self._process_batch(points, cropped_im_size, crop_box)
             data.cat(batch_data)
             del batch_data
         self.predictor.reset_image()
@@ -268,17 +264,17 @@ class SamAutomaticMaskGenerator:
         points: np.ndarray,
         im_size: Tuple[int, ...],
         crop_box: List[int],
-        orig_size: Tuple[int, ...],
     ) -> MaskData:
-        orig_h, orig_w = orig_size
-
+        uncropped_h, uncropped_w = self.uncropped_size
+        #points: batch of points to use as prompts
+        #im_size: size of the cropped image
+        #crop_box: coordinates of the crop
+        #orig size
         # Run model on this batch
-        transformed_points = self.predictor.transform.apply_coords(points, im_size)
-        in_points = torch.as_tensor(transformed_points, device=torch.device('cpu'))
-        in_labels = torch.ones(in_points.shape[0], dtype=torch.int, device=torch.device('cpu'))
+        in_labels = np.ones(points.shape[0], dtype=np.int)
         masks, iou_preds, _ = self.predictor.predict(
-            in_points[:, None, :],
-            in_labels[:, None],
+            points,
+            in_labels,
             multimask_output=True,
             return_logits=True,
         )
@@ -309,12 +305,12 @@ class SamAutomaticMaskGenerator:
         data["boxes"] = batched_mask_to_box(data["masks"])
 
         # Filter boxes that touch crop boundaries
-        keep_mask = ~is_box_near_crop_edge(data["boxes"], crop_box, [0, 0, orig_w, orig_h])
+        keep_mask = ~is_box_near_crop_edge(data["boxes"], crop_box, [0, 0, uncropped_w, uncropped_h])
         if not torch.all(keep_mask):
             data.filter(keep_mask)
 
         # Compress to RLE
-        data["masks"] = uncrop_masks(data["masks"], crop_box, orig_h, orig_w)
+        data["masks"] = uncrop_masks(data["masks"], crop_box, uncropped_h, uncropped_w)
         data["rles"] = mask_to_rle_pytorch(data["masks"])
         del data["masks"]
 

@@ -129,7 +129,7 @@ class Block(nn.Module):
         self.window_size = window_size
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        shortcut = x
+        res = x
         x = self.norm1(x)
         # Window partition
         if self.window_size > 0:
@@ -141,7 +141,7 @@ class Block(nn.Module):
         if self.window_size > 0:
             x = window_unpartition(x, self.window_size, pad_hw, (H, W))
 
-        x = shortcut + x
+        x = res + x
         x = x + self.mlp(self.norm2(x))
 
         return x

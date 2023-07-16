@@ -101,16 +101,16 @@ class SAM_predict(nn.Module):
     @torch.no_grad()
     def encode_image(
         self,
-        image: np.ndarray,
-    ) -> None:
+        x: torch.Tensor
+    ) -> torch.Tensor:
         """
         Arguments:
-          image (np.ndarray): The image for calculating masks. Expects an
-            image in HWC uint8 format, with pixel values in [0, 255].
+          x (torch.Tensor): Image tensor of shape (B, 3, H, W)
+
+        Returns:
+            (torch.Tensor): Image embedding of shape (B, E, H, W)
         """
 
-        # Resize
-        image, x = self.transform.apply_image(image)
         # Normalize
         x = (x - self.pixel_mean) / self.pixel_std
         # Pad
@@ -119,21 +119,35 @@ class SAM_predict(nn.Module):
         padw = self.image_encoder.img_size - w
         x = nn.functional.pad(x, (0, padw, 0, padh))
         # Encode
-        with GPUManager(task="encode_image", device=torch.device('cuda'), verbose=True, tensors={
+        with GPUManager(task= "encode_image", device= torch.device('cuda'), verbose= True, tensors={
         "image_encoder":self.image_encoder, 
         "x": x })  as tensors:
             tensors['out'] = tensors['image_encoder'](tensors['x'])
             self.image_encoder = tensors['image_encoder'].to(torch.device('cpu'))
-            return image, tensors['out'].to(torch.device('cpu'))
+            return tensors['out'].to(torch.device('cpu'))
     
     @torch.no_grad()
-    def encode_prompt(self,
-        original_size,
+    def encode_prompts(
+        self,
+        original_size : Tuple[int, int],
         point_coords: Optional[np.ndarray] = None,
         point_labels: Optional[np.ndarray] = None,
         box: Optional[np.ndarray] = None,
         mask_input: Optional[np.ndarray] = None,
-        ):
+        )-> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """
+        Arguments:
+            original_size (Tuple[int, int]): Original image size (H, W)
+            point_coords (np.ndarray): Point coordinates of shape (N, 2)
+            point_labels (np.ndarray): Point labels of shape (N,)
+            box (np.ndarray): Box coordinates of shape (4,)
+            mask_input (np.ndarray): Mask input of shape (H,
+        
+        Returns:
+            (torch.Tensor): Point embeddings of shape (1, N, E)
+            (torch.Tensor): Box embeddings of shape (1, E)
+            (torch.Tensor): Mask embeddings of shape (1, E, H, W)
+        """
         if point_coords is not None:
             assert (
                 point_labels is not None
@@ -150,11 +164,11 @@ class SAM_predict(nn.Module):
         if mask_input is not None:
             mask_input = torch.as_tensor(mask_input[None, :, :, :], dtype=torch.float)
         
-        with GPUManager(task="encode_prompt", device=torch.device('cuda'), verbose=True ,tensors={
-        "prompt_encoder":self.prompt_encoder, 
-        "points":points, 
-        "box":box, 
-        "mask_input":mask_input }) as tensors:
+        with GPUManager(task= "encode_prompt", device= torch.device('cuda'), verbose= True ,tensors={
+        "prompt_encoder": self.prompt_encoder, 
+        "points": points, 
+        "box": box, 
+        "mask_input": mask_input }) as tensors:
             tensors['sparse_embeddings'], tensors['dense_embeddings'] = tensors['prompt_encoder'](
                 points=tensors['points'],
                 boxes=tensors['box'],
@@ -188,7 +202,6 @@ class SAM_predict(nn.Module):
             iou_predictions = tensors['iou_predictions'].to(torch.device('cpu'))
 
         return low_res_masks, iou_predictions
-
 
     @torch.no_grad()
     def forward(
@@ -233,37 +246,6 @@ class SAM_predict(nn.Module):
             )
         return outputs
     
-    def postprocess_masks(
-        self,
-        masks: torch.Tensor,
-        input_size: Tuple[int, ...],
-        original_size: Tuple[int, ...],
-    ) -> torch.Tensor:
-        """
-        Remove padding and upscale masks to the original image size.
-
-        Arguments:
-          masks (torch.Tensor): Batched masks from the mask_decoder,
-            in BxCxHxW format.
-          input_size (tuple(int, int)): The size of the image input to the
-            model, in (H, W) format. Used to remove padding.
-          original_size (tuple(int, int)): The original size of the image
-            before resizing for input to the model, in (H, W) format.
-
-        Returns:
-          (torch.Tensor): Batched masks in BxCxHxW format, where (H, W)
-            is given by original_size.
-        """
-        masks = nn.functional.interpolate(
-            masks,
-            (self.image_encoder.img_size, self.image_encoder.img_size),
-            mode="bilinear",
-            align_corners=False,
-        )
-        masks = masks[..., : input_size[0], : input_size[1]]
-        masks = nn.functional.interpolate(masks, original_size, mode="bilinear", align_corners=False)
-        return masks
-
-    
+ 
 if __name__ == "__main__":
-    model = SAM("vit_l")
+    model = SAM_predict("vit_l")

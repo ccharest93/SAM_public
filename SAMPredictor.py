@@ -2,7 +2,7 @@
 import numpy as np
 import torch
 from torch import nn
-from SAM import SAM
+from SAM import SAM_predict
 
 from typing import Optional, Tuple
 
@@ -13,7 +13,7 @@ from utils.model import GPUManager
 class SamPredictor:
     def __init__(
         self,
-        sam_model: SAM,
+        sam_model: SAM_predict,
     ) -> None:
         """
         Uses SAM to calculate the image embedding for an image, and then
@@ -42,18 +42,17 @@ class SamPredictor:
         """
 
         self.reset_image()
-
-        # Transform the image to the form expected by the model
+        # Apply transform
         self.original_size = image.shape[:2]
-        image, out = self.model.encode_image(image)
-        self.input_size = tuple(image.shape[-2:])
-        # Set various attributes
-        self.is_image_set = True
-        return image, out
+        image, x = self.model.transform.apply_image(image)
+        self.input_size = tuple(x.shape[-2:])
+        # Encode image
+        return image, self.model.encode_image(x)
 
     @torch.no_grad()
     def predict(
         self,
+        image_embeddings: torch.Tensor,
         point_coords: Optional[np.ndarray] = None,
         point_labels: Optional[np.ndarray] = None,
         box: Optional[np.ndarray] = None,
@@ -65,6 +64,7 @@ class SamPredictor:
         Predict masks for the given input prompts, using the currently set image.
 
         Arguments:
+          image_embeddings (torch.Tensor): The image embeddings for the image
           point_coords (np.ndarray or None): A Nx2 array of point prompts to the
             model. Each point is in (X,Y) in pixels.
           point_labels (np.ndarray or None): A length N array of labels for the
@@ -93,26 +93,29 @@ class SamPredictor:
             of masks and H=W=256. These low resolution logits can be passed to
             a subsequent iteration as mask input.
         """
-        if not self.is_image_set:
-            raise RuntimeError("An image must be set with .set_image(...) before mask prediction.")
         
-        dense_embeddings, sparse_embeddings = self.model.prompt_encoder(point_coords, point_labels, box, mask_input)
-        low_res_masks, iou_predictions = self.model.decode_masks(dense_embeddings, sparse_embeddings, mask_input, multimask_output)
-        masks = self.model.postprocess_masks(low_res_masks, self.input_size, self.original_size)
-        #threshold masks
+        if not self.original_size:
+            raise RuntimeError("An image must be set with .set_image(...) before mask prediction.")
+        # Prompt Encoding
+        dense_embeddings, sparse_embeddings = self.model.encode_prompts(self.original_size, point_coords, point_labels, box, mask_input)
+        # Mask Decoding
+        low_res_masks, iou_predictions = self.model.decode_masks(image_embeddings, dense_embeddings, sparse_embeddings, multimask_output)
+        # Mask Upsampling
+        masks = nn.functional.interpolate(
+            low_res_masks,
+            (self.model.image_encoder.img_size, self.model.image_encoder.img_size),
+            mode="bilinear",
+            align_corners=False,
+        )
+        masks = masks[..., : self.input_size[0], : self.input_size[1]]
+        masks = nn.functional.interpolate(masks, self.original_size, mode="bilinear", align_corners=False)
+        # Mask thresholding
         if not return_logits:
             masks = masks > self.model.mask_threshold
 
-        masks_np = masks[0].detach().cpu().numpy()
-        iou_predictions_np = iou_predictions[0].detach().cpu().numpy()
-        low_res_masks_np = low_res_masks[0].detach().cpu().numpy()
-        return masks_np, iou_predictions_np, low_res_masks_np
-
+        return masks[0].numpy(), iou_predictions[0].numpy(), low_res_masks[0].numpy()
+    
     def reset_image(self) -> None:
         """Resets the currently set image."""
-        self.is_image_set = False
-        self.features = None
-        self.orig_h = None
-        self.orig_w = None
-        self.input_h = None
-        self.input_w = None
+        self.original_size = None
+        self.input_size = None
