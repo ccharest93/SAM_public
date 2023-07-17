@@ -24,11 +24,10 @@ def img_clicked(evt: gr.SelectData, pil_img):
     )
     return [(pil_img*0.4 + show_mask(mask)*0.6).astype(np.uint8) for mask in masks]
 
-
-
 def process(np_img):
     global features
     image, features = predictor.set_image(np_img)
+
 if __name__ == "__main__":
     #GLOBAL VARIABLES
     model = SAM_predict("vit_l")

@@ -153,8 +153,8 @@ class SAM_predict(nn.Module):
                 point_labels is not None
             ), "point_labels must be supplied if point_coords is supplied."
             point_coords = self.transform.apply_coords(point_coords, original_size)
-            point_coords = torch.as_tensor(point_coords[None, :, :], dtype=torch.float)
-            point_labels = torch.as_tensor(point_labels[None, :], dtype=torch.int)
+            point_coords = torch.as_tensor(point_coords, dtype=torch.float)
+            point_labels = torch.as_tensor(point_labels, dtype=torch.int)
             points = (point_coords, point_labels)
         else:
             points = None
@@ -164,7 +164,7 @@ class SAM_predict(nn.Module):
         if mask_input is not None:
             mask_input = torch.as_tensor(mask_input[None, :, :, :], dtype=torch.float)
         
-        with GPUManager(task= "encode_prompt", device= torch.device('cuda'), verbose= True ,tensors={
+        with GPUManager(task= "encode_prompt", device= torch.device('cuda'), verbose= False ,tensors={
         "prompt_encoder": self.prompt_encoder, 
         "points": points, 
         "box": box, 
@@ -184,7 +184,7 @@ class SAM_predict(nn.Module):
         dense_prompt_embeddings,
         sparse_prompt_embeddings,
         multimask_output,):
-        with GPUManager(task="decode_masks", device=torch.device('cuda'), verbose=True ,tensors={
+        with GPUManager(task="decode_masks", device=torch.device('cuda'), verbose=False ,tensors={
         "mask_decoder":self.mask_decoder,
         "image_embeddings":image_embeddings,
         "dense_prompt_embeddings":dense_prompt_embeddings,

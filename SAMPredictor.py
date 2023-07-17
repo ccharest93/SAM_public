@@ -113,7 +113,7 @@ class SamPredictor:
         if not return_logits:
             masks = masks > self.model.mask_threshold
 
-        return masks[0].numpy(), iou_predictions[0].numpy(), low_res_masks[0].numpy()
+        return masks, iou_predictions, low_res_masks
     
     def reset_image(self) -> None:
         """Resets the currently set image."""

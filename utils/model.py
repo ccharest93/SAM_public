@@ -28,19 +28,17 @@ class GPUManager():
     def __enter__(self):
         start = time.perf_counter()
         self.tensors = to_device(self.tensors, self.device)
-        print("ENTERING...")
-        print("Context: {}".format(self.task))
-        print("Device: {}".format(self.device))
         if self.verbose:
+            print("ENTERING...")
+            print("Context: {}".format(self.task))
+            print("Device: {}".format(self.device)) 
             self.reporter.report()
-        self.total_time += time.perf_counter() - start
+            self.total_time += time.perf_counter() - start
         return self.tensors
     
     def __exit__(self, exc_type, exc_value, exc_traceback):
-        start = time.perf_counter()
-        self.total_time += time.perf_counter() - start
-        print("EXITING...")
-        print("Context: {}".format(self.task))
-        print("Time taken: {}".format(self.total_time))
         if self.verbose:
+            print("EXITING...")
+            print("Context: {}".format(self.task))
+            print("Time taken: {}".format(self.total_time))
             self.reporter.report()
